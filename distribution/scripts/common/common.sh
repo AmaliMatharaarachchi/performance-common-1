@@ -242,3 +242,63 @@ function write_server_metrics() {
         fi
     fi
 }
+
+
+function kubetransfer(){
+    local deployment="$1"
+    local location="$2"
+    local file_name="$3"
+    local num_items=1
+    if [[ ! -z $4 ]]; then
+        num_items=$4
+    fi
+    if [[ ! $num_items -eq 1 ]]; then
+        for((i=0;i<${num_items};i++)); do
+            local pod="$(kubectl get pod -l deployment=$deployment -n wso2 -o jsonpath="{.items[$i].metadata.name}")"
+            kubectl cp wso2/$pod:$location ${report_location}/$file_name-$i.log
+        done
+    else
+        local pod="$(kubectl get pod -l deployment=$deployment -n wso2 -o jsonpath="{.items[0].metadata.name}")"
+        kubectl cp wso2/$pod:$location ${report_location}/$file_name.log
+    fi
+}
+
+function kubetransferFolder(){
+    local deployment="$1"
+    local location="$2"
+    local folder_name="$3"
+    local num_items=1
+    if [[ ! -z $4 ]]; then
+        num_items=$4
+    fi
+    if [[ ! $num_items -eq 1 ]]; then
+        for((i=0;i<${num_items};i++)); do
+            local pod="$(kubectl get pod -l deployment=$deployment -n wso2 -o jsonpath="{.items[$i].metadata.name}")"
+            kubectl cp wso2/$pod:$location ${report_location}/$folder_name-$i
+        done
+    else
+        local pod="$(kubectl get pod -l deployment=$deployment -n wso2 -o jsonpath="{.items[0].metadata.name}")"
+        kubectl cp wso2/$pod:$location ${report_location}/$folder_name
+    fi
+}
+
+function kubeLogs(){
+    local deployment="$1"
+    local folder_name="$2"
+    local file_name="$3"
+    local num_items=1
+    if [[ ! -z $4 ]]; then
+        num_items=$4
+    fi
+    if [[ ! $num_items -eq 1 ]]; then
+        for((i=0;i<${num_items};i++)); do
+            local pod="$(kubectl get pod -l deployment=$deployment -n wso2 -o jsonpath="{.items[$i].metadata.name}")"
+            mkdir ${report_location}/$folder_name-$i
+            kubectl logs -n wso2 $pod > ${report_location}/$folder_name-$i/$file_name.log
+        done
+    else
+        local pod="$(kubectl get pod -l deployment=$deployment -n wso2 -o jsonpath="{.items[0].metadata.name}")"
+        mkdir ${report_location}/$folder_name
+        kubectl logs -n wso2 $pod > ${report_location}/$folder_name/$file_name.log
+    fi
+}

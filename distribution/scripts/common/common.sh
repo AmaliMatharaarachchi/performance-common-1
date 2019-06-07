@@ -183,29 +183,31 @@ function write_server_metrics() {
         return 1
     fi
     local server=$1
-    local metrics_location="${report_location}/${server}"
-    mkdir -p $metrics_location
     local ssh_host
     local pgrep_pattern
-    if [[ ! -z $3 ]]; then
+    if [ "$2" != "localhost" ]; then
         ssh_host="$2"
-        pgrep_pattern="$3"
-    else
-        pgrep_pattern="$2"
     fi
+    pgrep_pattern="$3"
+    local file_name=$server
+    if [[ ! -z $4 ]]; then
+        file_name="$4"
+    fi
+    local metrics_location="${report_location}/${file_name}"
+    mkdir -p $metrics_location
     echo "Writing server metrics for $server. Process pattern: $pgrep_pattern, SSH host: ${ssh_host:-N/A}"
     local command_prefix=""
     export LC_TIME=C
     local sar_yesterday_file="/var/log/sa/sa$(date +%d -d yesterday)"
     local sar_today_file="/var/log/sa/sa$(date +%d)"
-    local local_sar_yesterday_file="${metrics_location}/${server}_$(basename $sar_yesterday_file)"
-    local local_sar_today_file="${metrics_location}/${server}_$(basename $sar_today_file)"
+    local local_sar_yesterday_file="${metrics_location}/${file_name}_$(basename $sar_yesterday_file)"
+    local local_sar_today_file="${metrics_location}/${file_name}_$(basename $sar_today_file)"
     if [[ ! -z $ssh_host ]]; then
         command_prefix="ssh -o SendEnv=LC_TIME $ssh_host"
-        download_file $server $sar_yesterday_file ${server}/$(basename $local_sar_yesterday_file)
-        download_file $server $sar_today_file ${server}/$(basename $local_sar_today_file)
+        download_file $server $sar_yesterday_file ${file_name}/$(basename $local_sar_yesterday_file)
+        download_file $server $sar_today_file ${file_name}/$(basename $local_sar_today_file)
         $command_prefix $script_dir/../common/perf-stat-stop.sh
-        download_file $server /tmp/perf.csv ${server}/${server}_perf.csv
+        download_file $server /tmp/perf.csv ${file_name}/${file_name}_perf.csv
     else
         if [[ -f $sar_yesterday_file ]]; then
             echo "Copying $sar_yesterday_file to $local_sar_yesterday_file..."
@@ -217,23 +219,24 @@ function write_server_metrics() {
         fi
         $script_dir/../common/perf-stat-stop.sh
         if [[ -f /tmp/perf.csv ]]; then
-            cp -v /tmp/perf.csv "${metrics_location}/${server}_perf.csv"
+            cp -v /tmp/perf.csv "${metrics_location}/${file_name}_perf.csv"
         fi
     fi
-    write_sar_reports "${metrics_location}" "$server" "$local_sar_today_file" "$local_sar_yesterday_file"
-    $command_prefix date >"${metrics_location}/${server}_date.txt"
-    $command_prefix ss -s >"${metrics_location}/${server}_ss.txt"
-    $command_prefix uptime >"${metrics_location}/${server}_uptime.txt"
-    $command_prefix top -bn 1 >"${metrics_location}/${server}_top.txt"
-    $command_prefix df -h >"${metrics_location}/${server}_disk_usage.txt"
-    $command_prefix free -m >"${metrics_location}/${server}_free_memory.txt"
+    echo "$local_sar_today_file $local_sar_yesterday_file"
+    write_sar_reports "${metrics_location}" "$file_name" "$local_sar_today_file" "$local_sar_yesterday_file"
+    $command_prefix date >"${metrics_location}/${file_name}_date.txt"
+    $command_prefix ss -s >"${metrics_location}/${file_name}_ss.txt"
+    $command_prefix uptime >"${metrics_location}/${file_name}_uptime.txt"
+    $command_prefix top -bn 1 >"${metrics_location}/${file_name}_top.txt"
+    $command_prefix df -h >"${metrics_location}/${file_name}_disk_usage.txt"
+    $command_prefix free -m >"${metrics_location}/${file_name}_free_memory.txt"
     if [[ ! -z $pgrep_pattern ]]; then
         if [[ ! -z $command_prefix ]]; then
-            if ! $command_prefix ps u -p \$\(pgrep -f $pgrep_pattern\) >"${metrics_location}/${server}_ps.txt" 2>/dev/null; then
+            if ! $command_prefix ps u -p \$\(pgrep -f $pgrep_pattern\) >"${metrics_location}/${file_name}_ps.txt" 2>/dev/null; then
                 echo "Unable to get 'ps' details from remote server: $server"
             fi
         else
-            if ! ps u -p $(pgrep -f $pgrep_pattern) >"${metrics_location}/${server}_ps.txt" 2>/dev/null; then
+            if ! ps u -p $(pgrep -f $pgrep_pattern) >"${metrics_location}/${file_name}_ps.txt" 2>/dev/null; then
                 echo "Unable to get 'ps' details from local server: $server"
             fi
         fi

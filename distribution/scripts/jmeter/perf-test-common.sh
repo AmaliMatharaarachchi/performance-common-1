@@ -93,15 +93,12 @@ declare -a include_scenario_names
 # Scenario names to exclude
 declare -a exclude_scenario_names
 
-backend_ssh_host=netty
-
 # JMeter Servers
 # If jmeter_servers = 1, only client will be used. If jmeter_servers > 1, remote JMeter servers will be used.
 default_jmeter_servers=1
 jmeter_servers=$default_jmeter_servers
 # JMeter SSH hosts array depending on the number of servers. For example, jmeter1 and jmeter2 for two servers.
-declare -a jmeter_ssh_hosts
-
+netty_deployment=netty-http-echo-server
 payload_type=ARRAY
 # Estimate flag
 estimate=false
@@ -319,11 +316,11 @@ if ! [[ $netty_service_heap_size =~ $heap_regex ]]; then
     exit 1
 fi
 
-declare -a jmeter_hosts
-for ((c = 1; c <= $jmeter_servers; c++)); do
-    jmeter_ssh_hosts+=("jmeter$c")
-    jmeter_hosts+=($(get_ssh_hostname jmeter$c))
-done
+#declare -a jmeter_hosts
+#for ((c = 1; c <= $jmeter_servers; c++)); do
+#    jmeter_ssh_hosts+=("jmeter$c")
+#    jmeter_hosts+=($(get_ssh_hostname jmeter$c))
+#done
 
 function record_scenario_duration() {
     local scenario_name="$1"
@@ -470,7 +467,9 @@ function initialize_test() {
         if [[ $jmeter_servers -gt 1 ]]; then
             for jmeter_ssh_host in ${jmeter_ssh_hosts[@]}; do
                 echo "Generating Payloads in $jmeter_ssh_host"
-                ssh $jmeter_ssh_host "./payloads/generate-payloads.sh" -p $payload_type ${payload_sizes[@]}
+                ssh $jmeter_ssh_host "./payloads/generate-payloads.sh" -p $payload_type ${payload_sizes[@]} || {
+                echo "[ERROR] while generate-payloads in $jmeter_ssh_host"
+                }
             done
         else
             pushd $HOME
@@ -542,9 +541,8 @@ function test_scenarios() {
                         if [[ $sleep_time -ge 0 ]]; then
                             local backend_flags="${scenario[backend_flags]}"
                             echo "Starting Backend Service. Delay: $sleep_time, Additional Flags: ${backend_flags:-N/A}"
-                            ssh $backend_ssh_host "./netty-service/netty-start.sh -m $netty_service_heap_size -w \
-                                -- ${backend_flags} --delay $sleep_time"
-                            collect_server_metrics netty $backend_ssh_host netty
+                            ./netty-service/netty-start-k8.sh -m $netty_service_heap_size -w \
+                               -- ${backend_flags} --delay $sleep_time
                         fi
 
                         declare -ag jmeter_params=("users=$users_per_jmeter" "duration=$test_duration")
@@ -555,14 +553,15 @@ function test_scenarios() {
                             echo "Starting Remote JMeter servers"
                             for ix in ${!jmeter_ssh_hosts[@]}; do
                                 echo "Starting Remote JMeter server. SSH Host: ${jmeter_ssh_hosts[ix]}, IP: ${jmeter_hosts[ix]}, Path: $HOME, Heap: $jmeter_server_heap_size"
-                                ssh ${jmeter_ssh_hosts[ix]} "./jmeter/jmeter-server-start.sh -n ${jmeter_hosts[ix]} -i $HOME -m $jmeter_server_heap_size -- $JMETER_JVM_ARGS"
-                                collect_server_metrics ${jmeter_ssh_hosts[ix]} ${jmeter_ssh_hosts[ix]} ApacheJMeter.jar
+                                ssh ${jmeter_ssh_hosts[ix]} "./jmeter/jmeter-server-start.sh -n ${jmeter_hosts[ix]} -i $HOME -m $jmeter_server_heap_size -- $JMETER_JVM_ARGS" || {
+                                echo "[ERROR] while jmeter-server-start"
+                                }
                             done
                         fi
 
                         export JVM_ARGS="-Xms$jmeter_client_heap_size -Xmx$jmeter_client_heap_size -XX:+PrintGC -XX:+PrintGCDetails -XX:+PrintGCDateStamps -Xloggc:$report_location/jmeter_gc.log $JMETER_JVM_ARGS"
 
-                        local jmeter_command="jmeter -n -t $script_dir/${jmx_file} -j $report_location/jmeter.log $jmeter_remote_args"
+                        local jmeter_command="jmeter -n -t ${jmx_file} -j $report_location/jmeter.log $jmeter_remote_args"
                         if [[ $jmeter_servers -gt 1 ]]; then
                             jmeter_command+=" -R $(
                                 IFS=","
@@ -603,15 +602,19 @@ function test_scenarios() {
                             echo "Wrote test start timestamp, end timestamp and test duration to $test_duration_file."
                         fi
 
-                        write_server_metrics jmeter ApacheJMeter.jar
+                        write_server_metrics jmeter localhost ApacheJMeter.jar jmeter
                         if [[ $jmeter_servers -gt 1 ]]; then
+                            local counter=0
                             for jmeter_ssh_host in ${jmeter_ssh_hosts[@]}; do
-                                write_server_metrics $jmeter_ssh_host $jmeter_ssh_host ApacheJMeter.jar
+                                counter=$[counter+1]
+                                write_server_metrics $jmeter_ssh_host $jmeter_ssh_host ApacheJMeter.jar jmeter$counter || {
+                                echo "[ERROR] error while write_server_metrices for $jmeter_ssh_host"
+                                }
                             done
                         fi
-                        if [[ $sleep_time -ge 0 ]]; then
-                            write_server_metrics netty $backend_ssh_host netty
-                        fi
+#                        if [[ $sleep_time -ge 0 ]]; then
+#                            write_server_metrics $backend_ssh_host $backend_ssh_host netty netty
+ #                       fi
 
                         if [[ -f ${report_location}/results.jtl ]]; then
                             $HOME/jtl-splitter/jtl-splitter.sh -- -f ${report_location}/results.jtl -t $warmup_time -u SECONDS -s
@@ -620,15 +623,26 @@ function test_scenarios() {
                             zip -jm ${report_location}/jtls.zip ${report_location}/results*.jtl
                         fi
 
-                        if [[ $sleep_time -ge 0 ]]; then
-                            download_file $backend_ssh_host netty-service/logs/netty.log netty.log
-                            download_file $backend_ssh_host netty-service/logs/nettygc.log netty_gc.log
-                        fi
+                        kubetransfer $netty_deployment /root/nettygc.log netty_gc || {
+                        echo "[WARNING] netty_gc.log file transfer failed"
+                        }
+                        kubetransfer $netty_deployment /logs/netty.log netty || {
+                        echo "[WARNING] netty.log file transfer failed"
+                        }
+
                         if [[ $jmeter_servers -gt 1 ]]; then
+			                local counter=0
                             for jmeter_ssh_host in ${jmeter_ssh_hosts[@]}; do
-                                download_file $jmeter_ssh_host jmetergc.log ${jmeter_ssh_host}_gc.log
-                                download_file $jmeter_ssh_host server.out ${jmeter_ssh_host}_server.out
-                                download_file $jmeter_ssh_host jmeter-server.log ${jmeter_ssh_host}_server.log
+				                counter=$[counter+1]
+                                download_file $jmeter_ssh_host jmetergc.log jmeter${counter}_gc.log || {
+				                echo "[ERROR] while download server.out from $jmeter_ssh_host"
+				                }
+                                download_file $jmeter_ssh_host server.out jmeter${counter}_server.out || {
+                                echo "[ERROR] while download server.out from $jmeter_ssh_host"
+                                }
+                                download_file $jmeter_ssh_host jmeter-server.log jmeter${counter}_server.log || {
+                                echo "[ERROR] while download jmeter-server.log from $jmeter_ssh_host"
+                                }
                             done
                         fi
 
